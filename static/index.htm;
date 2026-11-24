@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EVRIA</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:Tahoma,sans-serif;background:#101010;color:#f5f5f5}
+header{padding:18px;text-align:center;background:#191919;border-bottom:1px solid #333}
+header h1{margin:0;font-size:28px;letter-spacing:2px}
+main{max-width:1050px;margin:22px auto;padding:0 14px}
+.panel{background:#191919;border:1px solid #333;border-radius:12px;padding:16px;margin-bottom:16px}
+h2{font-size:18px;margin:0 0 14px}
+input,button{font:inherit;border-radius:8px;padding:11px;border:1px solid #444}
+input{background:#101010;color:#fff;min-width:0}
+button{background:#eee;color:#111;cursor:pointer;border:0}
+.row{display:flex;gap:9px;flex-wrap:wrap}
+.row input{flex:1}
+.grid{display:grid;grid-template-columns:1.5fr 1fr;gap:16px}
+video{width:100%;max-height:65vh;background:#000;border-radius:8px}
+#messages{height:260px;overflow:auto;background:#101010;border:1px solid #333;border-radius:8px;padding:10px;margin-bottom:10px}
+.msg{padding:6px 0;border-bottom:1px solid #292929;overflow-wrap:anywhere}
+.muted{color:#aaa;font-size:12px}
+#status{margin:10px 2px;color:#bbb;font-size:13px}
+@media(max-width:700px){.grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header><h1>EVRIA</h1></header>
+<main>
+  <section class="panel">
+    <h2>اتاق</h2>
+    <div class="row">
+      <input id="name" placeholder="اسم">
+      <input id="code" placeholder="رمز ورود" inputmode="numeric">
+      <button id="joinBtn">ورود</button>
+    </div>
+    <div id="status">وارد اتاق نشده‌اید.</div>
+  </section>
+
+  <div class="grid">
+    <section class="panel">
+      <h2>ویدیو</h2>
+      <video id="player" controls playsinline preload="metadata"></video>
+      <div class="row" id="uploadPanel" hidden style="margin-top:10px">
+        <input type="file" id="videoFile" accept="video/mp4,video/webm,video/ogg">
+        <button id="uploadBtn">آپلود</button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>چت</h2>
+      <div id="messages"></div>
+      <form id="chatForm" class="row">
+        <input id="chatInput" placeholder="پیام..." maxlength="1000" disabled>
+        <button id="sendBtn" disabled>ارسال</button>
+      </form>
+    </section>
+  </div>
+</main>
+<script>
+let socket=null, joined=false, applyingRemote=false;
+const player=document.getElementById('player');
+const statusEl=document.getElementById('status');
+const messages=document.getElementById('messages');
+function status(t){statusEl.textContent=t}
+function addMessage(t){const d=document.createElement('div');d.className='msg';d.textContent=t;messages.appendChild(d);messages.scrollTop=messages.scrollHeight}
+function send(o){if(socket&&socket.readyState===WebSocket.OPEN)socket.send(JSON.stringify(o))}
+async function loadVideo(){
+  const r=await fetch('/api/status');const s=await r.json();
+  if(s.video_exists){player.src='/video';player.load();document.getElementById('uploadPanel').hidden=true}
+  else document.getElementById('uploadPanel').hidden=false;
+}
+document.getElementById('joinBtn').onclick=()=>{
+  if(joined)return;
+  const name=document.getElementById('name').value.trim()||'مهمان';
+  const code=document.getElementById('code').value.trim();
+  if(!code){status('رمز ورود را وارد کنید.');return}
+  const scheme=location.protocol==='https:'?'wss':'ws';
+  socket=new WebSocket(`${scheme}://${location.host}/ws?room=main&code=${encodeURIComponent(code)}&name=${encodeURIComponent(name)}`);
+  socket.onopen=()=>{
+    joined=true;document.getElementById('chatInput').disabled=false;document.getElementById('sendBtn').disabled=false;
+    document.getElementById('joinBtn').disabled=true;status('وارد اتاق شدید.');loadVideo();
+  };
+  socket.onmessage=async e=>{
+    const d=JSON.parse(e.data);
+    if(d.type==='error'){status(d.text);return}
+    if(d.type==='welcome'){if(d.video_exists)await loadVideo()}
+    if(d.type==='chat')addMessage(d.name+': '+d.text);
+    if(d.type==='system')addMessage(d.text);
+    if(d.type==='sync'&&player.src){
+      applyingRemote=true;
+      const apply=async()=>{
+        if(Math.abs(player.currentTime-d.time)>1.2)player.currentTime=d.time;
+        if(d.action==='play'){try{await player.play()}catch(e){}}
+        if(d.action==='pause')player.pause();
+        setTimeout(()=>applyingRemote=false,350);
+      };
+      if(player.readyState>=1)apply();else player.addEventListener('loadedmetadata',apply,{once:true});
+    }
+  };
+  socket.onclose=()=>{joined=false;status('اتصال قطع شد.');document.getElementById('joinBtn').disabled=false};
+  socket.onerror=()=>status('خطا در اتصال.');
+};
+document.getElementById('chatForm').onsubmit=e=>{
+  e.preventDefault();const i=document.getElementById('chatInput');const t=i.value.trim();
+  if(t){send({type:'chat',text:t});i.value=''}
+};
+document.getElementById('uploadBtn').onclick=async()=>{
+  const f=document.getElementById('videoFile').files[0];
+  const code=document.getElementById('code').value.trim();
+  if(!f){status('ویدیو انتخاب نشده است.');return}
+  const b=document.getElementById('uploadBtn');b.disabled=true;
+  const form=new FormData();form.append('file',f);
+  try{
+    const r=await fetch('/upload?room_code='+encodeURIComponent(code),{method:'POST',body:form});
+    const d=await r.json();if(!r.ok)throw new Error(d.detail||'آپلود ناموفق بود.');
+    await loadVideo();status('ویدیو آپلود شد.');
+  }catch(e){status(e.message)}finally{b.disabled=false}
+};
+player.addEventListener('play',()=>{if(!applyingRemote)send({type:'play',time:player.currentTime})});
+player.addEventListener('pause',()=>{if(!applyingRemote)send({type:'pause',time:player.currentTime})});
+player.addEventListener('seeked',()=>{if(!applyingRemote)send({type:'seek',time:player.currentTime})});
+</script>
+</body>
+</html>
